@@ -158,7 +158,7 @@ def _cmd_download(args: argparse.Namespace) -> None:
 def _cmd_list() -> None:
     from talkie.config import MODELS
 
-    print("Available Talkie models:\n")
+    print("Available talkie models:\n")
     print(f"  {'Name':<28} {'HuggingFace Repo':<38} {'Style'}")
     print(f"  {'─' * 28} {'─' * 38} {'─' * 5}")
     for name, spec in sorted(MODELS.items()):
