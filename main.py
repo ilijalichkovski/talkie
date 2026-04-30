@@ -1,4 +1,9 @@
-"""Run Talkie on the roman-numerals problem and score its solution."""
+"""Run Talkie on the roman-numerals problem and score its solution.
+
+Usage:
+    uv run main.py            # run once (uses server if available, else loads model)
+    uv run main.py --serve    # start the model server (load once, serve forever)
+"""
 
 from __future__ import annotations
 
@@ -18,6 +23,9 @@ TEACH_FILE = ROOT / "teach.md"
 
 MODEL_NAME = "talkie-1930-13b-it"
 
+SERVER_HOST = "127.0.0.1"
+SERVER_PORT = 5193
+
 
 def load_text(path: Path) -> str:
     return path.read_text(encoding="utf-8").strip()
@@ -29,9 +37,10 @@ def build_prompt() -> str:
     instructions = load_text(PROBLEM_DIR / "instructions.md")
 
     prompt = (
-        f"{teacher_instruction}\n\n"
-        f"--- Problem Introduction ---\n{introduction}\n\n"
-        f"--- Problem Instructions ---\n{instructions}\n\n"
+        f"{teacher_instruction}"
+        # f"{teacher_instruction}\n\n"
+        # f"--- Problem Introduction ---\n{introduction}\n\n"
+        # f"--- Problem Instructions ---\n{instructions}\n\n"
     )
     return prompt
 
@@ -45,21 +54,121 @@ def extract_code(raw_output: str) -> str:
     if fenced:
         return fenced.group(1).strip()
 
-    # If the model just wrote raw code, return the whole thing.
     return raw_output.strip()
 
 
-def run_talkie(prompt: str) -> str:
-    """Run inference on the Talkie IT model and return its raw text output."""
+# ---------------------------------------------------------------------------
+# Server mode: load model once, serve over HTTP
+# ---------------------------------------------------------------------------
+
+def start_server() -> None:
+    """Load the model and serve generation requests over HTTP."""
+    import http.server
+    import socketserver
+
     sys.path.insert(0, str(ROOT / "src"))
-    from talkie import Talkie  # noqa: E402
+    from talkie import Talkie
+
+    print("Loading model…", file=sys.stderr)
+    model = Talkie(MODEL_NAME)
+    print(f"Model ready. Serving on {SERVER_HOST}:{SERVER_PORT}", file=sys.stderr)
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length))
+            prompt = body["prompt"]
+            temperature = body.get("temperature", 0.7)
+            max_tokens = body.get("max_tokens", 1024)
+            stream = body.get("stream", False)
+
+            if stream:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                full_text = []
+                for token in model.stream(
+                    prompt, temperature=temperature, max_tokens=max_tokens
+                ):
+                    full_text.append(token)
+                    chunk = json.dumps({"token": token}) + "\n"
+                    self.wfile.write(chunk.encode())
+                    self.wfile.flush()
+                done = json.dumps({"done": True, "text": "".join(full_text)}) + "\n"
+                self.wfile.write(done.encode())
+                self.wfile.flush()
+            else:
+                result = model.generate(
+                    prompt, temperature=temperature, max_tokens=max_tokens
+                )
+                response = json.dumps({"text": result.text})
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(response.encode())
+
+        def log_message(self, format, *args):
+            print(f"[server] {args[0]}", file=sys.stderr)
+
+    socketserver.TCPServer.allow_reuse_address = True
+    with socketserver.TCPServer((SERVER_HOST, SERVER_PORT), Handler) as httpd:
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            print("\nServer stopped.", file=sys.stderr)
+
+
+def _server_is_running() -> bool:
+    """Check if the model server is reachable."""
+    import urllib.request
+    try:
+        req = urllib.request.Request(
+            f"http://{SERVER_HOST}:{SERVER_PORT}/",
+            data=json.dumps({"prompt": "", "max_tokens": 1}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=5)
+        return True
+    except Exception:
+        return False
+
+
+def run_talkie_via_server(prompt: str) -> str:
+    """Send a prompt to the running model server."""
+    import urllib.request
+    body = json.dumps({"prompt": prompt, "temperature": 0.7, "max_tokens": 1024})
+    req = urllib.request.Request(
+        f"http://{SERVER_HOST}:{SERVER_PORT}/",
+        data=body.encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    resp = urllib.request.urlopen(req, timeout=300)
+    data = json.loads(resp.read())
+    return data["text"]
+
+
+def run_talkie_local(prompt: str) -> str:
+    """Load the model in-process and generate (slow cold start)."""
+    sys.path.insert(0, str(ROOT / "src"))
+    from talkie import Talkie
 
     print("Loading model…", file=sys.stderr)
     model = Talkie(MODEL_NAME)
     print("Generating…", file=sys.stderr)
-
     result = model.generate(prompt, temperature=0.7, max_tokens=1024)
     return result.text
+
+
+def run_talkie(prompt: str) -> str:
+    """Run inference — via server if available, otherwise local."""
+    if _server_is_running():
+        print("Using model server.", file=sys.stderr)
+        return run_talkie_via_server(prompt)
+    else:
+        print("No server found, loading model locally (slow)…", file=sys.stderr)
+        return run_talkie_local(prompt)
 
 
 def run_tests(code: str) -> dict:
@@ -125,6 +234,10 @@ def save_result(
 
 
 def main() -> None:
+    if "--serve" in sys.argv:
+        start_server()
+        return
+
     teacher_instruction = load_text(TEACH_FILE)
     if not teacher_instruction:
         print("ERROR: teach.md is empty. Write your instructions there first.", file=sys.stderr)

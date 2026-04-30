@@ -32,13 +32,23 @@ Before you begin, read these files for full context:
 
 **Get the highest score on the unit tests.** Talkie's output is extracted, written to `roman_numerals.py`, and scored against `problem/roman_numerals_test.py`. The score is reported as `passed/total` (e.g. `22/27`).
 
+## Running the model server
+
+Loading the model takes several minutes. To avoid this on every run, start the model server once in a background terminal:
+
+```bash
+uv run main.py --serve
+```
+
+Once you see "Model ready. Serving on 127.0.0.1:5193", the server is up. All subsequent `uv run main.py` calls will automatically use it and complete in seconds.
+
 ## The experiment loop
 
 LOOP FOREVER:
 
 1. Look at the current state: read `teach.md` and any previous results in `results/`.
 2. Modify `teach.md` with a new teaching strategy.
-3. Run the experiment: `python main.py`
+3. Run the experiment: `uv run main.py`
 4. Read the results JSON saved in `results/`. Check the score, Talkie's full output, and the extracted code.
 5. If the score improved, keep iterating from here. If the score is the same or worse, try a different approach.
 6. Repeat.
